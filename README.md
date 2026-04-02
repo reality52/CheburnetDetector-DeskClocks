@@ -1,10 +1,7 @@
 # CheburnetDetector-DeskClocks
-Vibecoded Wi-Fi Internet shutdown detector. Checks Internet every 3 minutes and if we got some anomalyes beeps and flashes like crazy.
+# Детектор Чебурнета. По совместительству настольные часы.
 
-Schematic:
-
-
-Network Monitor для ESP8266-01
+Сетевой монитор-часы для ESP8266-01
 
 Устройство для мониторинга доступности сети, интернет-сервисов и whitelist-сайтов.
 Оснащено LCD‑дисплеем (I²C), динамиком, веб‑сервером с историей проверок и интеграцией с Home Assistant через MQTT.
@@ -48,25 +45,23 @@ SCL → GPIO0	Адрес 0x27
 **Настройка перед прошивкой**
 
 Откройте скетч whitelistcheck.ino и измените следующие параметры:
-cpp
-
-// Wi-Fi
+// **Wi-Fi**
 const char* ssid     = "ваш_SSID";
 const char* password = "ваш_пароль";
 
-// NTP (время)
+// **NTP (время)**
 const char* ntpServer   = "ru.pool.ntp.org";   // или IP вашего локального NTP
 const long  gmtOffset_sec = 10800;             // +3 часа MSK
 const int   daylightOffset_sec = 0;
 
-// MQTT брокер
+// **MQTT брокер**
 const char* mqtt_server   = "MQTTSERVER";
 const int   mqtt_port     = 1883;
 const char* mqtt_user     = "";                // если нужна авторизация
 const char* mqtt_password = "";
 const char* mqtt_client_id = "network_monitor_esp";
 
-// Тихие часы (динамик не пищит)
+//** Тихие часы (время в которое динамик не пищит)**
 const int SILENT_START_HOUR = 21;   // 21:00
 const int SILENT_END_HOUR   = 7;    // 07:00
 
