@@ -50,20 +50,20 @@ const char* ssid     = "ваш_SSID";
 const char* password = "ваш_пароль";
 
 // **NTP (время)**
-const char* ntpServer   = "ru.pool.ntp.org";   // или IP вашего локального NTP
-const long  gmtOffset_sec = 10800;             // +3 часа MSK
+const char* ntpServer   = "ru.pool.ntp.org"; 
+const long  gmtOffset_sec = 10800;            
 const int   daylightOffset_sec = 0;
 
 // **MQTT брокер**
 const char* mqtt_server   = "MQTTSERVER";
 const int   mqtt_port     = 1883;
-const char* mqtt_user     = "";                // если нужна авторизация
+const char* mqtt_user     = "";
 const char* mqtt_password = "";
 const char* mqtt_client_id = "network_monitor_esp";
 
-//** Тихие часы (время в которое динамик не пищит)**
-const int SILENT_START_HOUR = 21;   // 21:00
-const int SILENT_END_HOUR   = 7;    // 07:00
+// **Тихие часы **(время, в которое динамик не пищит)
+const int SILENT_START_HOUR = 21;
+const int SILENT_END_HOUR   = 7;
 
 Сборка и прошивка
 
