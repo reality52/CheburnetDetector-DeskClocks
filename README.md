@@ -1,2 +1,236 @@
 # CheburnetDetector-DeskClocks
 Vibecoded Wi-Fi Internet shutdown detector. Checks Internet every 3 minutes and if we got some anomalyes beeps and flashes like crazy.
+
+Schematic:
+
+
+Network Monitor для ESP8266-01
+
+Устройство для мониторинга доступности сети, интернет-сервисов и whitelist-сайтов.
+Оснащено LCD‑дисплеем (I²C), динамиком, веб‑сервером с историей проверок и интеграцией с Home Assistant через MQTT.
+
+<img width="420" height="300" alt="изображение" src="https://github.com/user-attachments/assets/209c40af-fedb-48bb-b6dd-e6b410b4c1a9" />
+
+Возможности
+
+    ✅ Проверка доступности локального шлюза, whitelist и внешних сайтов (ping + HTTP).
+
+    🖥️ LCD‑дисплей 16×2: показывает текущее время и дату (синхронизация через NTP).
+
+    🔔 Звуковая индикация (динамик) при смене статуса сети – только в разрешённое время (можно настроить «тихие часы»).
+
+    🌐 Веб‑сервер с:
+
+        таблицей истории проверок (до 100 записей),
+
+        отображением хода текущего теста,
+
+        кнопками Clear Logs, Run test now и Tetris Melody (проигрывание мелодии).
+
+    📡 MQTT Discovery для Home Assistant – автоматическое создание сенсоров.
+
+    💾 Сохранение истории и настроек в LittleFS.
+
+    🔄 Периодическая проверка каждые 3 минуты (можно изменить в коде).
+
+    🌙 Тихий режим: динамик не работает в заданные часы (по умолчанию 21:00 – 07:00).
+
+Аппаратное обеспечение
+Компонент  	Пин ESP8266-01	Примечание
+LCD (I²C)	SDA → GPIO2
+SCL → GPIO0	Адрес 0x27
+Динамик (пьезо)	GPIO1 (TX)	Анод к GPIO1, катод на GND
+Питание	3.3V / 5V	**LCD может требовать 5V**
+
+    Важно: для ESP‑01 используйте переходник USB‑UART с выводами 3.3V и GND.
+    LCD‑модуль PCF8574 подключается через подтяжку I²C (обычно встроена).
+
+**Настройка перед прошивкой**
+
+Откройте скетч whitelistcheck.ino и измените следующие параметры:
+cpp
+
+// Wi-Fi
+const char* ssid     = "ваш_SSID";
+const char* password = "ваш_пароль";
+
+// NTP (время)
+const char* ntpServer   = "ru.pool.ntp.org";   // или IP вашего локального NTP
+const long  gmtOffset_sec = 10800;             // +3 часа MSK
+const int   daylightOffset_sec = 0;
+
+// MQTT брокер
+const char* mqtt_server   = "MQTTSERVER";
+const int   mqtt_port     = 1883;
+const char* mqtt_user     = "";                // если нужна авторизация
+const char* mqtt_password = "";
+const char* mqtt_client_id = "network_monitor_esp";
+
+// Тихие часы (динамик не пищит)
+const int SILENT_START_HOUR = 21;   // 21:00
+const int SILENT_END_HOUR   = 7;    // 07:00
+
+Сборка и прошивка
+
+    Установите в Arduino IDE платформу ESP8266 (через менеджер плат).
+
+    Установите библиотеки:
+
+        LiquidCrystal_PCF8574 (by Matthias Hertel)
+
+        TimeLib (by Paul Stoffregen)
+
+        PubSubClient (by Nick O‘Leary)
+
+        ArduinoJson (by Benoit Blanchon)
+
+        buzzer/lib/pitches.zip (by HiBit)
+
+    Подключите ESP‑01 через USB‑UART адаптер.
+
+    Выберите плату: Generic ESP8266 Module.
+
+    Загрузите скетч.
+
+    При первом запуске будет создана файловая система LittleFS – дождитесь инициализации (около 10 сек).
+
+Работа устройства
+LCD‑дисплей
+
+    В нормальном режиме – часы и дата (двоеточие мигает).
+
+    Во время теста – анимация в четырёх углах экрана (не затирает время).
+
+    При проблемах – сообщение о статусе (например, DEAD INTERNET, ! WHITELISTED !) и мигание подсветки.
+
+Звуковые сигналы
+
+    Короткий писк – при включении.
+
+    Три восходящих тона – успешное подключение к Wi‑Fi.
+
+    Длинные гудки – ошибка Wi‑Fi.
+
+    Мелодия статуса – проигрывается при смене статуса на не‑OK (не более 10 секунд).
+
+    Tetris Melody – по нажатию кнопки на веб‑странице (игнорируется в тихие часы).
+
+Веб‑интерфейс
+
+Откройте в браузере IP‑адрес ESP8266 (можно узнать из последовательного порта или через роутер).
+
+    Server time – текущее время с NTP.
+
+    Current status – OK / Network Problem / Dead Internet / Whitelisted / Anomaly.
+
+    Ход теста – отображает проверяемый хост и результат последней проверки.
+
+    Кнопки:
+
+        Clear Logs – очищает историю и счётчики.
+
+        Run test now – запускает внеочередную проверку сети.
+
+        Tetris Melody – проигрывает мелодию через динамик.
+
+    Таблица History – дата, время и статус каждого теста (хранится до 100 записей).
+
+    Все кнопки работают без перезагрузки страницы (AJAX).
+
+Интеграция с Home Assistant
+
+ESP8266 автоматически публикует MQTT‑конфигурацию (Discovery).
+После подключения к MQTT‑брокеру в Home Assistant появятся сенсоры:
+
+    sensor.network_status – текстовый статус.
+
+    sensor.network_uptime – аптайм в часах.
+
+    sensor.network_result – JSON с деталями.
+
+    binary_sensor.local_router_ok – доступность шлюза.
+
+    binary_sensor.whitelist_sites_ok – доступность whitelist‑сайтов.
+
+    binary_sensor.world_sites_ok – доступность внешних сайтов.
+
+Также устройство слушает команды в топике homeassistant/network/command:
+
+    restart – перезагрузка ESP.
+
+    clear – очистка логов.
+
+    test – запуск проверки.
+
+Настройка списков проверки
+
+В скетче определены три списка:
+cpp
+
+CheckItem worldList[] = {      // внешние сайты (полный интернет)
+  {"google.com", false, 0, 0, 0},
+  {"cloudflare.com", false, 0, 0, 0},
+  ...
+};
+
+CheckItem whitelistList[] = {  // whitelist (например, российские)
+  {"vk.com", false, 0, 0, 0},
+  {"ya.ru", false, 0, 0, 0},
+  ...
+};
+
+CheckItem localList[] = {      // локальный шлюз
+  {"192.168.0.1", true, 0, 0, 0}
+};
+
+Вы можете изменить хосты или добавить новые.
+Параметр isIp должен быть true, если имя – это IP‑адрес.
+
+Логика определения статуса
+Условие	Статус	LCD‑сообщение
+Нет доступа к локальному шлюзу	Network Problem	Network Problem!
+Локальный есть, но нет whitelist и нет внешних	Dead Internet	DEAD INTERNET
+Локальный есть, whitelist работает, внешние нет	Whitelisted	! WHITELISTED !
+Частичные потери (не все сайты)	Anomaly	Anomaly !
+Всё доступно	OK	часы и дата
+
+Известные ограничения
+
+    HTTP‑проверка работает только через порт 80 (без SSL). HTTPS‑сайты не проверяются, но редирект с HTTP на HTTPS считается успехом.
+
+    При использовании NTP‑сервера убедитесь, что он доступен (не блокируется файрволом).
+
+    LittleFS требует предварительного форматирования (создаётся автоматически при первом запуске).
+
+Возможные проблемы и решения
+
+HTTP всегда FAIL
+Проверьте, что сайт отвечает на HTTP (не HTTPS).
+Увеличьте таймаут в checkHttp() или разрешите редиректы (код уже это делает).
+
+Неправильное время в таблице истории
+Убедитесь, что NTP‑синхронизация прошла успешно. В Serial Monitor должно быть Time synced.
+
+Кнопка Clear Logs не очищает таблицу
+Перезагрузите веб‑страницу после нажатия (или используйте кнопку Run test now – таблица обновится после теста).
+Файлы проекта
+
+    whitelistcheck.ino – основной скетч.
+    
+    README.md – этот файл.
+
+Лицензия
+
+Проект распространяется под лицензией MIT.
+Вы можете свободно использовать, модифицировать и распространять код.
+Благодарности
+
+    Библиотеки: LiquidCrystal_PCF8574, TimeLib, PubSubClient, ArduinoJson, HiBit buzzer/lib/pitches
+
+    Идея анимации – сообщество ESP8266.
+
+    Мелодия Tetris – для некоммерческого использования.
+
+Автор: Qwen 3.5/ Deepseek / Reality
+GitHub: [https://github.com/reality52/CheburnetDetector-DeskClocks]
+Версия: 1.0 (2026)
