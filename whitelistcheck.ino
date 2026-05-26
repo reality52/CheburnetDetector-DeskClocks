@@ -25,6 +25,7 @@ const int SILENT_START_HOUR = 21;   // 21:00
 const int SILENT_END_HOUR = 7;      // 07:00
 
 // --- СПИСКИ ДЛЯ ПРОВЕРКИ ---
+// Структура элемента для проверки: имя хоста, флаг IP-адреса, результаты ping и HTTP, время ping
 struct CheckItem {
   const char* name;
   bool isIp;
@@ -54,6 +55,7 @@ CheckItem localList[] = {
 const char* daysOfWeek[] = {"Su", "Mn", "Tu", "We", "Th", "Fr", "Sa"};
 
 // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+// Счётчик результатов тестов, флаги статусов, таймеры, состояние дисплея, мелодии, история, синхронизация NTP
 int resultCount = 0;
 bool whitelistOk = false;
 bool worldOk = false;
@@ -91,6 +93,8 @@ ESP8266WebServer server(80);
 // -------------------------------------------------------------------
 // ФУНКЦИИ ИСТОРИИ
 // -------------------------------------------------------------------
+// Загружает историю проверок из файла /history.dat на LittleFS
+// Читает до MAX_HISTORY записей типа HistoryEntry
 void loadHistory() {
   if (!LittleFS.begin()) return;
   File file = LittleFS.open("/history.dat", "r");
@@ -108,6 +112,7 @@ void loadHistory() {
   LittleFS.end();
 }
 
+// Сохраняет историю проверок в файл /history.dat (только если есть изменения)
 void saveHistory() {
   if (!historyChanged) return;
   if (!LittleFS.begin()) {
@@ -128,6 +133,8 @@ void saveHistory() {
   LittleFS.end();
 }
 
+// Добавляет запись в историю с текущей меткой времени и указанным статусом
+// При переполнении вытесняет самую старую запись (сдвигом)
 void addHistoryEntry(uint8_t status) {
   if (historyCount >= MAX_HISTORY) {
     for (int i = 0; i < MAX_HISTORY - 1; i++) {
@@ -143,6 +150,7 @@ void addHistoryEntry(uint8_t status) {
   Serial.printf("Added history: status=%d at %lu\n", status, history[historyCount-1].timestamp);
 }
 
+// Формирует HTML-таблицу истории для отображения на веб-странице
 String getHistoryHTML() {
   String html = "<table border='1' cellpadding='5'><tr><th>Time</th><th>Status</th></tr>";
   for (int i = 0; i < historyCount; i++) {
@@ -164,6 +172,7 @@ String getHistoryHTML() {
   return html;
 }
 
+// Формирует JSON-массив истории (timestamp, status) для AJAX-запроса
 String getHistoryJSON() {
   String output = "[";
   for (int i = 0; i < historyCount; i++) {
@@ -178,6 +187,7 @@ String getHistoryJSON() {
 // -------------------------------------------------------------------
 // ФУНКЦИИ ПРОВЕРКИ
 // -------------------------------------------------------------------
+// Сохраняет результат проверки одного хоста в файл /test_result.txt
 void saveTestResult(CheckItem* item) {
   if (LittleFS.begin()) {
     File file = LittleFS.open("/test_result.txt", "w");
@@ -194,6 +204,7 @@ void saveTestResult(CheckItem* item) {
   }
 }
 
+// Загружает и выводит в Serial последний сохранённый лог теста
 void loadFromFile() {
   if (LittleFS.begin()) {
     File file = LittleFS.open("/test_result.txt", "r");
@@ -208,6 +219,7 @@ void loadFromFile() {
   }
 }
 
+// Сохраняет текущий статус и счётчик результатов в /status_log.txt
 void saveToFile() {
   if (LittleFS.begin()) {
     File file = LittleFS.open("/status_log.txt", "w");
@@ -226,6 +238,7 @@ void saveToFile() {
 // -------------------------------------------------------------------
 // WEB HANDLERS (с AJAX, без перезагрузки)
 // -------------------------------------------------------------------
+// Корневая страница веб-интерфейса: статус, время, кнопки управления, история
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Network Monitor</title>";
   html += "<style>body{font-family:Arial;margin:20px;} table{border-collapse:collapse;} th,td{border:1px solid #ccc;padding:8px;} .status-ok{color:green;} .status-problem{color:red;} .status-whitelist{color:orange;}</style>";
@@ -263,6 +276,7 @@ void handleRoot() {
   server.send(200, "text/html", html);
 }
 
+// Эндпоинт /now — возвращает текущее серверное время в JSON
 void handleNow() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
@@ -275,11 +289,13 @@ void handleNow() {
   }
 }
 
+// Эндпоинт /testprogress — возвращает прогресс текущего теста (inProgress, currentHost, lastResult)
 void handleTestProgress() {
   String json = "{\"inProgress\":" + String(testingInProgress ? "true" : "false") + ",\"currentHost\":\"" + currentTestingHost + "\",\"lastResult\":\"" + lastTestResult + "\",\"lastCheck\":" + String(lastCheckTime / 1000) + "}";
   server.send(200, "application/json", json);
 }
 
+// Эндпоинт /status — возвращает текущий статус сети и аптайм в JSON
 void handleStatus() {
   String statusStr;
   switch (currentStatus) { case 0: statusStr = "OK"; break; case 1: statusStr = "Network Problem"; break; case 2: statusStr = "Dead Internet"; break; case 3: statusStr = "Whitelisted"; break; case 4: statusStr = "Anomaly"; break; }
@@ -287,6 +303,7 @@ void handleStatus() {
   server.send(200, "application/json", json);
 }
 
+// Эндпоинт /clear — сбрасывает счётчик результатов, очищает историю
 void handleClear() {
   resultCount = 0;
   saveToFile();
@@ -296,15 +313,18 @@ void handleClear() {
   server.send(200, "text/plain", "Cleared");
 }
 
+// Эндпоинт /refresh — запускает внеочередную проверку сети с анимацией
 void handleRefresh() {
   runTestWithAnimation();
   server.send(200, "text/plain", "Test completed");
 }
 
+// Эндпоинт /history — возвращает историю проверок в формате JSON
 void handleHistory() {
   server.send(200, "application/json", getHistoryJSON());
 }
 
+// Эндпоинт /tetris — проигрывает мелодию Tetris через динамик
 void handleTetris() {
   // Проигрываем мелодию Tetris через динамик (короткая версия)
   // Не блокируем, запускаем в отдельной функции
@@ -312,6 +332,7 @@ void handleTetris() {
   server.send(200, "text/plain", "Tetris!");
 }
 
+// Обработчик 404 — возвращает "Not Found" для всех неизвестных маршрутов
 void handleNotFound() {
   server.send(404, "text/plain", "Not Found");
 }
@@ -319,6 +340,8 @@ void handleNotFound() {
 // -------------------------------------------------------------------
 // АНИМАЦИЯ ПОВЕРХ ЧАСОВ (не стирает экран)
 // -------------------------------------------------------------------
+// Показывает анимацию теста в углах дисплея (не стирает часы)
+// Бегающие символы * - # + в течение ~1.6 с, затем стираются
 void showTestAnimation() {
   // Сохраняем область экрана с часами? Нет, часы не стираем, просто рисуем в углах.
   // Но чтобы после анимации убрать символы, мы их затрём пробелами.
@@ -340,6 +363,8 @@ void showTestAnimation() {
 // -------------------------------------------------------------------
 // ПРОВЕРКИ
 // -------------------------------------------------------------------
+// Пытается подключиться к хосту по портам 80 (HTTP) и 443 (HTTPS)
+// Возвращает true, если хотя бы один порт открыт
 bool ping(const char* host) {
   WiFiClient client;
   IPAddress ip;
@@ -350,6 +375,8 @@ bool ping(const char* host) {
   return false;
 }
 
+// Отправляет HTTP GET-запрос к хосту и проверяет код ответа (2xx или 3xx)
+// Возвращает true при успешном HTTP-ответе
 bool checkHttp(const char* host) {
   WiFiClient client;
   // Пробуем подключиться только на порт 80 (HTTP)
@@ -387,12 +414,15 @@ bool checkHttp(const char* host) {
   return httpSuccess;
 }
 
+// Сбрасывает флаги pinged, httpChecked и pingTime для всех списков хостов
 void resetFlags() {
   for (int i = 0; i < 1; i++) { localList[i].pinged = false; localList[i].httpChecked = false; localList[i].pingTime = 0; }
   for (int i = 0; i < 3; i++) { whitelistList[i].pinged = false; whitelistList[i].httpChecked = false; whitelistList[i].pingTime = 0; }
   for (int i = 0; i < 5; i++) { worldList[i].pinged = false; worldList[i].httpChecked = false; worldList[i].pingTime = 0; }
 }
 
+// Проверяет список хостов: для каждого выполняет ping и (если не IP) HTTP-проверку
+// Сохраняет результаты через saveTestResult, обновляет currentTestingHost/lastTestResult
 void checkHosts(CheckItem* list, int count) {
   for (int i = 0; i < count; i++) {
     currentTestingHost = list[i].name;
@@ -421,6 +451,8 @@ void checkHosts(CheckItem* list, int count) {
   }
 }
 
+// Проверяет, наступил ли "тихий час" (промежуток между SILENT_START_HOUR и SILENT_END_HOUR)
+// В тихий час динамик не пищит
 bool isSilentHour() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return false;
@@ -432,6 +464,9 @@ bool isSilentHour() {
   }
 }
 
+// Оценивает общий статус сети на основе результатов проверки всех списков хостов
+// Определяет статусы: 0=OK, 1=Network Problem, 2=Dead Internet, 3=Whitelisted, 4=Anomaly
+// При изменении статуса включает мелодию, мигание подсветки, обновляет дисплей
 void evaluateStatus() {
   bool localOk = localList[0].pinged;
   whitelistOk = true;
@@ -475,6 +510,7 @@ void evaluateStatus() {
   }
 }
 
+// Обновляет дисплей: часы в формате ЧЧ:ММ (с мигающим двоеточием) и дату
 void updateClockDisplay(struct tm* timeinfo) {
   char timeStr[10];
   sprintf(timeStr, "%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min);
@@ -487,6 +523,8 @@ void updateClockDisplay(struct tm* timeinfo) {
   lcd.print(dateStr);
 }
 
+// Запускает полный цикл проверки: анимация → сброс флагов → проверка всех списков → оценка статуса
+// После теста обновляет дисплей в зависимости от результата
 void runTestWithAnimation() {
   testingInProgress = true;
   showTestAnimation();   // анимация поверх часов
@@ -515,10 +553,15 @@ void runTestWithAnimation() {
 // -------------------------------------------------------------------
 // МЕЛОДИИ
 // -------------------------------------------------------------------
+// Короткий звуковой сигнал при запуске (две ноты восходящие)
 void beepStartup() { tone(SPEAKER_PIN, 1000, 100); delay(50); tone(SPEAKER_PIN, 1500, 100); }
+// Сигнал успешного подключения к WiFi (три восходящие ноты)
 void beepWifiSuccess() { tone(SPEAKER_PIN, 800, 100); delay(50); tone(SPEAKER_PIN, 1200, 100); delay(50); tone(SPEAKER_PIN, 1600, 100); }
+// Сигнал ошибки подключения к WiFi (два низких гудка)
 void beepWifiFail() { tone(SPEAKER_PIN, 300, 300); delay(100); tone(SPEAKER_PIN, 300, 300); }
 
+// Проигрывает мелодию, соответствующую текущему статусу ошибки
+// Работает только 10 секунд после смены статуса, не играет в тихий час
 void playStatusMelody() {
   if (!melodyEnabled) return;
   if (isSilentHour()) {
@@ -535,6 +578,8 @@ void playStatusMelody() {
   }
 }
 
+// Проигрывает мелодию Tetris через динамик (блокирующая, ~30 секунд)
+// Не играет в тихий час
 void playTetrisMelody() {
   if (isSilentHour()) return; // ночью не играем
   // Простая версия мелодии Tetris
@@ -620,6 +665,8 @@ int durations[] = {
 // -------------------------------------------------------------------
 // ВРЕМЯ
 // -------------------------------------------------------------------
+// Синхронизирует время по NTP, если прошло больше NTP_SYNC_INTERVAL с последней синхронизации
+// Ждёт ответа до 5 секунд (20 попыток по 250 мс)
 void syncTimeIfNeeded() {
   unsigned long nowMs = millis();
   if (lastNtpSync == 0 || (nowMs - lastNtpSync > NTP_SYNC_INTERVAL)) {
@@ -640,6 +687,7 @@ void syncTimeIfNeeded() {
 // -------------------------------------------------------------------
 // SETUP
 // -------------------------------------------------------------------
+// Инициализация: Serial, динамик, дисплей (I2C), LittleFS, загрузка истории, WiFi, веб-сервер, NTP
 void setup() {
   Serial.begin(115200);
   pinMode(SPEAKER_PIN, OUTPUT);
@@ -700,6 +748,8 @@ void setup() {
 // -------------------------------------------------------------------
 // LOOP
 // -------------------------------------------------------------------
+// Главный цикл: обработка веб-запросов, синхронизация времени,
+// периодическая проверка сети (каждые 3 минуты), обновление часов/дисплея
 void loop() {
   server.handleClient();
   syncTimeIfNeeded();
