@@ -5,10 +5,10 @@
 #include <TimeLib.h>
 #include <ESP8266WebServer.h>
 #include <LittleFS.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <pitches.h>
+
 // --- НАСТРОЙКИ ПИНОВ ---
 #define SPEAKER_PIN 1
 #define SDA_PIN 2
@@ -22,13 +22,6 @@ const char* password = "YOUR-PASSWORD";
 const char* ntpServer = "CHOSE-AVAILABLE-NTP-SERVER(IP OR ADDRESS)";
 const long  gmtOffset_sec = 10800; // GMT OFFSET 
 const int   daylightOffset_sec = 0; 
-
-// --- MQTT НАСТРОЙКИ ---
-const char* mqtt_server = "YOUR-MQTT-SERVER";
-const int   mqtt_port = 1883;
-const char* mqtt_user = "";
-const char* mqtt_password = "";
-const char* mqtt_client_id = "network_monitor_esp";
 
 // --- НАСТРОЙКИ ТИШИНЫ (ночью динамик не пищит) ---
 const int SILENT_START_HOUR = 21;   // 21:00
@@ -77,7 +70,6 @@ bool clockAnimation = true;
 unsigned long currentStatus = 0;
 unsigned long melodyStartTime = 0;
 bool melodyEnabled = false;
-bool discoverySent = false;
 
 // Для отображения хода теста на веб-странице
 bool testingInProgress = false;
@@ -99,13 +91,6 @@ unsigned long lastNtpSync = 0;
 const unsigned long NTP_SYNC_INTERVAL = 24UL * 3600 * 1000;
 
 ESP8266WebServer server(80);
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-#define TOPIC_STATUS        "homeassistant/network/status"
-#define TOPIC_RESULT        "homeassistant/network/result"
-#define TOPIC_PING          "homeassistant/network/ping"
-#define TOPIC_UPTIME        "homeassistant/network/uptime"
 
 // -------------------------------------------------------------------
 // ФУНКЦИИ ИСТОРИИ
@@ -242,88 +227,6 @@ void saveToFile() {
     }
     LittleFS.end();
   }
-}
-
-// -------------------------------------------------------------------
-// MQTT
-// -------------------------------------------------------------------
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  Serial.print("MQTT Received: ");
-  Serial.print(topic);
-  Serial.print(" - ");
-  Serial.println(message);
-  if (String(topic) == "homeassistant/network/command") {
-    if (message == "restart") {
-      ESP.restart();
-    } else if (message == "clear") {
-      resultCount = 0;
-      saveToFile();
-    } else if (message == "test") {
-      runTestWithAnimation();
-    }
-  }
-}
-
-void sendMQTTDiscovery() {
-  if (!client.connected()) return;
-  String deviceJson = "\"device\":{\"identifiers\":[\"network_monitor_esp\"],\"name\":\"Network Monitor\",\"model\":\"ESP8266-01\",\"manufacturer\":\"DIY\"}";
-  String statusConfig = "{\"name\":\"Network Status\",\"state_topic\":\"" TOPIC_STATUS "\",\"unique_id\":\"network_monitor_status\",\"icon\":\"mdi:network-strength-4\"," + deviceJson + "}";
-  client.publish("homeassistant/sensor/network_monitor_status/config", statusConfig.c_str(), true);
-  String uptimeConfig = "{\"name\":\"Network Uptime\",\"state_topic\":\"" TOPIC_UPTIME "\",\"unit_of_measurement\":\"h\",\"unique_id\":\"network_monitor_uptime\",\"icon\":\"mdi:clock-outline\"," + deviceJson + "}";
-  client.publish("homeassistant/sensor/network_monitor_uptime/config", uptimeConfig.c_str(), true);
-  String resultConfig = "{\"name\":\"Network Result\",\"state_topic\":\"" TOPIC_RESULT "\",\"value_template\":\"{{ value_json.status }}\",\"json_attributes_topic\":\"" TOPIC_RESULT "\",\"unique_id\":\"network_monitor_result\",\"icon\":\"mdi:chart-line\"," + deviceJson + "}";
-  client.publish("homeassistant/sensor/network_monitor_result/config", resultConfig.c_str(), true);
-  String localConfig = "{\"name\":\"Local Router OK\",\"state_topic\":\"" TOPIC_RESULT "\",\"value_template\":\"{{ value_json.localOk }}\",\"device_class\":\"connectivity\",\"unique_id\":\"network_monitor_local_ok\"," + deviceJson + "}";
-  client.publish("homeassistant/binary_sensor/network_monitor_local_ok/config", localConfig.c_str(), true);
-  String whitelistConfig = "{\"name\":\"Whitelist Sites OK\",\"state_topic\":\"" TOPIC_RESULT "\",\"value_template\":\"{{ value_json.whitelistOk }}\",\"device_class\":\"connectivity\",\"unique_id\":\"network_monitor_whitelist_ok\"," + deviceJson + "}";
-  client.publish("homeassistant/binary_sensor/network_monitor_whitelist_ok/config", whitelistConfig.c_str(), true);
-  String worldConfig = "{\"name\":\"World Sites OK\",\"state_topic\":\"" TOPIC_RESULT "\",\"value_template\":\"{{ value_json.worldOk }}\",\"device_class\":\"connectivity\",\"unique_id\":\"network_monitor_world_ok\"," + deviceJson + "}";
-  client.publish("homeassistant/binary_sensor/network_monitor_world_ok/config", worldConfig.c_str(), true);
-  discoverySent = true;
-  Serial.println("MQTT Discovery sent");
-}
-
-void connectMQTT() {
-  Serial.print("Connecting to MQTT...");
-  if (!client.connected()) {
-    client.connect(mqtt_client_id, mqtt_user, mqtt_password);
-    if (client.connected()) {
-      Serial.println(" OK!");
-      client.subscribe("homeassistant/network/command");
-      if (!discoverySent) sendMQTTDiscovery();
-    } else {
-      Serial.println(" Failed!");
-    }
-  } else {
-    Serial.println(" Already connected");
-  }
-}
-
-void sendMQTTStatus() {
-  String statusStr;
-  switch (currentStatus) {
-    case 0: statusStr = "OK"; break;
-    case 1: statusStr = "Network Problem"; break;
-    case 2: statusStr = "Dead Internet"; break;
-    case 3: statusStr = "Whitelisted"; break;
-    case 4: statusStr = "Anomaly"; break;
-  }
-  client.publish(TOPIC_STATUS, statusStr.c_str());
-  String json = "{\"status\":\"" + statusStr + "\",\"timestamp\":" + String(time(nullptr)) + ",\"localOk\":" + String(localList[0].pinged ? "true" : "false") + ",\"whitelistOk\":" + String(whitelistOk ? "true" : "false") + ",\"worldOk\":" + String(worldOk ? "true" : "false") + "}";
-  client.publish(TOPIC_RESULT, json.c_str());
-  String uptimeStr = String((millis() / 1000 / 60 / 60) % 24) + "h";
-  client.publish(TOPIC_UPTIME, uptimeStr.c_str());
-}
-
-void sendMQTTPingResult(const CheckItem* item) {
-  char topic[100];
-  snprintf(topic, sizeof(topic), "%s/%s", TOPIC_PING, item->name);
-  String json = "{\"pinged\":" + String(item->pinged ? "true" : "false") + ",\"httpChecked\":" + String(item->httpChecked ? "true" : "false") + ",\"pingTime\":" + String(item->pingTime) + ",\"timestamp\":" + String(time(nullptr)) + "}";
-  client.publish(topic, json.c_str());
 }
 
 // -------------------------------------------------------------------
@@ -496,7 +399,7 @@ void resetFlags() {
   for (int i = 0; i < 5; i++) { worldList[i].pinged = false; worldList[i].httpChecked = false; worldList[i].pingTime = 0; }
 }
 
-void checkHosts(CheckItem* list, int count, bool isCritical, bool silent = true) {
+void checkHosts(CheckItem* list, int count, bool silent = true) {
   for (int i = 0; i < count; i++) {
     currentTestingHost = list[i].name;
     unsigned long pingStart = millis();
@@ -520,7 +423,6 @@ void checkHosts(CheckItem* list, int count, bool isCritical, bool silent = true)
       list[i].httpChecked = pingResult;
     }
     saveTestResult(&list[i]);
-    sendMQTTPingResult(&list[i]);
     delay(100);
   }
 }
@@ -577,7 +479,6 @@ void evaluateStatus() {
       if (getLocalTime(&timeinfo)) updateClockDisplay(&timeinfo);
       else lcd.print("Time error");
     }
-    sendMQTTStatus();
     saveToFile();
   }
 }
@@ -598,9 +499,9 @@ void runTestWithAnimation() {
   testingInProgress = true;
   showTestAnimation();   // анимация поверх часов
   resetFlags();
-  checkHosts(localList, 1, true, true);
-  checkHosts(whitelistList, 3, false, true);
-  checkHosts(worldList, 5, false, true);
+  checkHosts(localList, 1, true);
+  checkHosts(whitelistList, 3, true);
+  checkHosts(worldList, 5, true);
   evaluateStatus();
   testingInProgress = false;
   // После теста обновляем экран
@@ -793,9 +694,6 @@ void setup() {
     server.begin();
     Serial.println("Web Server Started");
     
-    client.setServer(mqtt_server, mqtt_port);
-    client.setCallback(mqttCallback);
-    
     syncTimeIfNeeded();
     
     lastCheckTime = millis() - 180000 + 15000;
@@ -811,8 +709,6 @@ void setup() {
 // LOOP
 // -------------------------------------------------------------------
 void loop() {
-  if (!client.connected()) connectMQTT();
-  client.loop();
   server.handleClient();
   syncTimeIfNeeded();
   
