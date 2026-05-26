@@ -3,7 +3,6 @@
 #include <LiquidCrystal_PCF8574.h>
 #include <ESP8266WebServer.h>
 #include <LittleFS.h>
-#include <ArduinoJson.h>
 #include <time.h>
 #include <pitches.h>
 
@@ -166,15 +165,13 @@ String getHistoryHTML() {
 }
 
 String getHistoryJSON() {
-  DynamicJsonDocument doc(4096);
-  JsonArray arr = doc.to<JsonArray>();
+  String output = "[";
   for (int i = 0; i < historyCount; i++) {
-    JsonObject obj = arr.createNestedObject();
-    obj["timestamp"] = (unsigned long)history[i].timestamp;
-    obj["status"] = history[i].status;
+    if (i > 0) output += ",";
+    output += "{\"timestamp\":" + String((unsigned long)history[i].timestamp);
+    output += ",\"status\":" + String(history[i].status) + "}";
   }
-  String output;
-  serializeJson(doc, output);
+  output += "]";
   return output;
 }
 
@@ -449,8 +446,8 @@ void evaluateStatus() {
   else if (!whitelistOk || !worldOk) newStatus = 4;
   else newStatus = 0;
   
-  addHistoryEntry(newStatus);
-  
+  if (newStatus != 0) addHistoryEntry(newStatus);
+
   if (newStatus != currentStatus) {
     currentStatus = newStatus;
     if (currentStatus != 0) {
