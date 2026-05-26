@@ -62,7 +62,6 @@ bool whitelistOk = false;
 bool worldOk = false;
 unsigned long lastCheckTime = 0;
 unsigned long networkProblemBeepTime = 0;
-bool networkProblemMode = false;
 unsigned long lastBacklightState = 0;
 bool backlightOn = true;
 unsigned long lastClockUpdate = 0;
@@ -399,7 +398,7 @@ void resetFlags() {
   for (int i = 0; i < 5; i++) { worldList[i].pinged = false; worldList[i].httpChecked = false; worldList[i].pingTime = 0; }
 }
 
-void checkHosts(CheckItem* list, int count, bool silent = true) {
+void checkHosts(CheckItem* list, int count) {
   for (int i = 0; i < count; i++) {
     currentTestingHost = list[i].name;
     unsigned long pingStart = millis();
@@ -460,7 +459,6 @@ void evaluateStatus() {
       lcd.clear();
       melodyStartTime = millis();
       melodyEnabled = true;
-      networkProblemMode = true;
       switch (currentStatus) {
         case 1: lcd.print("Network Problem!"); break;
         case 2: lcd.print("DEAD INTERNET"); break;
@@ -471,7 +469,6 @@ void evaluateStatus() {
       backlightOn = true;
     } else {
       melodyEnabled = false;
-      networkProblemMode = false;
       lcd.setBacklight(255);
       backlightOn = true;
       lastClockUpdate = millis();
@@ -499,9 +496,9 @@ void runTestWithAnimation() {
   testingInProgress = true;
   showTestAnimation();   // анимация поверх часов
   resetFlags();
-  checkHosts(localList, 1, true);
-  checkHosts(whitelistList, 3, true);
-  checkHosts(worldList, 5, true);
+  checkHosts(localList, 1);
+  checkHosts(whitelistList, 3);
+  checkHosts(worldList, 5);
   evaluateStatus();
   testingInProgress = false;
   // После теста обновляем экран
