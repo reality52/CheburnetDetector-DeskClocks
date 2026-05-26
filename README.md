@@ -56,7 +56,6 @@ const int SILENT_END_HOUR   = 7;
 1. Установите в Arduino IDE платформу **ESP8266** (через менеджер плат).
 2. Установите библиотеки:
    - `LiquidCrystal_PCF8574` (by Matthias Hertel)
-   - `TimeLib` (by Paul Stoffregen)
    - `ArduinoJson` (by Benoit Blanchon)
    - `pitches.h` (HiBit buzzer library)
 3. Подключите ESP-01 через USB-UART адаптер.
