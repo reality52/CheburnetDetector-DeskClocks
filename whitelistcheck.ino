@@ -5,7 +5,7 @@
 #include <LittleFS.h>
 #include <time.h>
 #include <pitches.h>
-
+#include <DNSServer.h>
 // --- НАСТРОЙКИ ПИНОВ ---
 #define SPEAKER_PIN 1
 #define SDA_PIN 2
@@ -14,15 +14,17 @@
 LiquidCrystal_PCF8574 lcd(LCD_I2C_ADDR);
 
 // --- СЕТЕВЫЕ НАСТРОЙКИ ---
-const char* ssid = "YOUR-SSID";
-const char* password = "YOUR-PASSWORD";
-const char* ntpServer = "CHOSE-AVAILABLE-NTP-SERVER(IP OR ADDRESS)";
+char wifiSsid[33] = "your-ssid";
+char wifiPass[65] = "your-pass";
+const char* AP_SSID = "NetworkMonitor";
+const char* AP_PASS = "12345678";
+const char* ntpServer = "0.ru.pool.ntp.org";
 const long  gmtOffset_sec = 10800; // GMT OFFSET 
 const int   daylightOffset_sec = 0; 
 
 // --- НАСТРОЙКИ ТИШИНЫ (ночью динамик не пищит) ---
 const int SILENT_START_HOUR = 21;   // 21:00
-const int SILENT_END_HOUR = 7;      // 07:00
+const int SILENT_END_HOUR = 8;      // 08:00
 
 // --- СПИСКИ ДЛЯ ПРОВЕРКИ ---
 // Структура элемента для проверки: имя хоста, флаг IP-адреса, результаты ping и HTTP, время ping
@@ -87,6 +89,10 @@ bool historyChanged = false;
 // Синхронизация времени
 unsigned long lastNtpSync = 0;
 const unsigned long NTP_SYNC_INTERVAL = 24UL * 3600 * 1000;
+
+bool apMode = false;
+DNSServer dnsServer;
+unsigned long wifiReconnectStart = 0;
 
 ESP8266WebServer server(80);
 
@@ -236,6 +242,166 @@ void saveToFile() {
 }
 
 // -------------------------------------------------------------------
+// КОНФИГУРАЦИЯ WIFI (LittleFS)
+// -------------------------------------------------------------------
+// Загружает SSID и пароль WiFi из файла /wifi.conf
+void loadWifiConfig() {
+  if (!LittleFS.begin()) return;
+  File file = LittleFS.open("/wifi.conf", "r");
+  if (file) {
+    while (file.available()) {
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.startsWith("ssid=")) {
+        strncpy(wifiSsid, line.substring(5).c_str(), 32);
+        wifiSsid[32] = '\0';
+      } else if (line.startsWith("pass=")) {
+        strncpy(wifiPass, line.substring(5).c_str(), 64);
+        wifiPass[64] = '\0';
+      }
+    }
+    file.close();
+    Serial.printf("WiFi config loaded: SSID=%s\n", wifiSsid);
+  }
+  LittleFS.end();
+}
+
+// Сохраняет SSID и пароль WiFi в файл /wifi.conf
+void saveWifiConfig(const char* newSsid, const char* newPass) {
+  if (!LittleFS.begin()) return;
+  File file = LittleFS.open("/wifi.conf", "w");
+  if (file) {
+    file.print("ssid=");
+    file.println(newSsid);
+    file.print("pass=");
+    file.println(newPass);
+    file.close();
+    Serial.println("WiFi config saved");
+  }
+  LittleFS.end();
+}
+
+// Страница настройки WiFi (режим точки доступа)
+void handleSetupPage() {
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<title>WiFi Setup</title><style>";
+  html += "body{font-family:'Segoe UI',Arial,sans-serif;background:#1a1a2e;color:#eee;margin:0;padding:20px;display:flex;justify-content:center;align-items:center;min-height:100vh}";
+  html += ".card{background:#16213e;border-radius:12px;padding:30px;max-width:420px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.3)}";
+  html += "h1{text-align:center;color:#e94560;margin-bottom:5px;font-size:1.4em}";
+  html += ".sub{text-align:center;color:#888;font-size:.85em;margin-bottom:20px}";
+  html += "label{display:block;margin-top:15px;font-weight:600;color:#aaa;font-size:.85em;text-transform:uppercase;letter-spacing:1px}";
+  html += "select,input[type=text],input[type=password]{width:100%;padding:10px;margin-top:5px;border:1px solid #333;border-radius:8px;background:#0f3460;color:#eee;font-size:1em;box-sizing:border-box}";
+  html += "select:focus,input:focus{outline:none;border-color:#e94560}";
+  html += "button{width:100%;padding:12px;margin-top:20px;border:none;border-radius:8px;background:#e94560;color:#fff;font-size:1.1em;font-weight:600;cursor:pointer;transition:background .2s}";
+  html += "button:hover{background:#c73553}";
+  html += ".scan-btn{background:#0f3460;margin-top:10px}.scan-btn:hover{background:#1a4a8a}";
+  html += ".info{text-align:center;color:#555;font-size:.75em;margin-top:15px}";
+  html += ".spin{display:none;text-align:center;margin-top:10px;color:#e94560}";
+  html += "</style></head><body><div class='card'>";
+  html += "<h1>&#x1f4f6; WiFi Setup</h1><p class='sub'>Network Monitor &mdash; настройка подключения</p>";
+  html += "<label>Доступные сети</label>";
+  html += "<select id='ssidSel' onchange=\"document.getElementById('ssid').value=this.value\">";
+  html += "<option value=''>-- Нажмите Scan --</option></select>";
+  html += "<button class='scan-btn' onclick='scanWifi()'>&#x1f50d; Scan</button>";
+  html += "<div id='spinner' class='spin'>Сканирование...</div>";
+  html += "<label>SSID</label><input type='text' id='ssid' placeholder='Имя сети'>";
+  html += "<label>Пароль</label><input type='password' id='pass' placeholder='Пароль WiFi'>";
+  html += "<button onclick='saveWifi()'>&#x1f4be; Сохранить и перезагрузить</button>";
+  html += "<p class='info'>После сохранения устройство перезагрузится<br>и попытается подключиться к указанной сети.</p>";
+  html += "</div><script>";
+  html += "async function scanWifi(){";
+  html += "document.getElementById('spinner').style.display='block';";
+  html += "document.getElementById('ssidSel').innerHTML='<option>Сканирование...</option>';";
+  html += "try{const r=await fetch('/scan');const n=await r.json();";
+  html += "const s=document.getElementById('ssidSel');s.innerHTML='<option value=\"\">-- Выберите сеть --</option>';";
+  html += "n.forEach(x=>{const o=document.createElement('option');o.value=x.ssid;";
+  html += "o.textContent=x.ssid+' ('+x.rssi+' dBm)'+(x.enc?' &#x1f512;':'');s.appendChild(o);});}";
+  html += "catch(e){document.getElementById('ssidSel').innerHTML='<option>Ошибка</option>';}";
+  html += "document.getElementById('spinner').style.display='none';}";
+  html += "async function saveWifi(){";
+  html += "const s=document.getElementById('ssid').value.trim();";
+  html += "const p=document.getElementById('pass').value;";
+  html += "if(!s){alert('Введите SSID!');return;}";
+  html += "try{await fetch('/savewifi',{method:'POST',headers:{'Content-Type':'application/json'},";
+  html += "body:JSON.stringify({ssid:s,pass:p})});alert('Сохранено! Перезагрузка...');}";
+  html += "catch(e){alert('Ошибка сохранения');}}";
+  html += "</script></body></html>";
+  server.send(200, "text/html", html);
+}
+
+// Сканирование доступных WiFi-сетей (JSON)
+void handleScan() {
+  int n = WiFi.scanNetworks();
+  String json = "[";
+  for (int i = 0; i < n; i++) {
+    if (i > 0) json += ",";
+    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + ",\"enc\":" + String(WiFi.encryptionType(i) != ENC_TYPE_NONE ? 1 : 0) + "}";
+  }
+  json += "]";
+  WiFi.scanDelete();
+  server.send(200, "application/json", json);
+}
+
+// Сохранение новых WiFi-настроек и перезагрузка устройства
+void handleSaveWifi() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    // Парсим JSON вручную (без ArduinoJson)
+    int ssidStart = body.indexOf("\"ssid\":\"") + 8;
+    int ssidEnd = body.indexOf("\"", ssidStart);
+    int passStart = body.indexOf("\"pass\":\"") + 8;
+    int passEnd = body.indexOf("\"", passStart);
+
+    if (ssidStart > 7 && ssidEnd > ssidStart && passStart > 7 && passEnd > passStart) {
+      String newSsid = body.substring(ssidStart, ssidEnd);
+      String newPass = body.substring(passStart, passEnd);
+
+      char ssidBuf[33];
+      char passBuf[65];
+      strncpy(ssidBuf, newSsid.c_str(), 32);
+      ssidBuf[32] = '\0';
+      strncpy(passBuf, newPass.c_str(), 64);
+      passBuf[64] = '\0';
+
+      saveWifiConfig(ssidBuf, passBuf);
+      server.send(200, "application/json", "{\"ok\":true}");
+
+      delay(1000);
+      ESP.restart();
+      return;
+    }
+  }
+  server.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid request\"}");
+}
+
+// Запуск режима точки доступа (AP) для настройки WiFi
+void startAPMode() {
+  apMode = true;
+  Serial.println("Starting AP mode...");
+  beepWifiFail();
+  lcd.clear();
+  lcd.print("AP: NetworkMon");
+  lcd.setCursor(0, 1);
+  lcd.print("192.168.4.1");
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  delay(500);
+  Serial.printf("AP SSID: %s\n", AP_SSID);
+  Serial.printf("AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
+  server.on("/", HTTP_GET, handleSetupPage);
+  server.on("/scan", HTTP_GET, handleScan);
+  server.on("/savewifi", HTTP_POST, handleSaveWifi);
+  server.onNotFound(handleSetupPage);
+  server.begin();
+  Serial.println("AP Web Server Started");
+}
+
+// -------------------------------------------------------------------
 // WEB HANDLERS (с AJAX, без перезагрузки)
 // -------------------------------------------------------------------
 // Корневая страница веб-интерфейса: статус, время, кнопки управления, история
@@ -269,7 +435,7 @@ void handleRoot() {
   }
   html += "</span></p>";
   html += "<div id='test-status' style='background:#f0f0f0;padding:10px;margin:10px 0;'>Loading...</div>";
-  html += "<p><button onclick='clearLogs()'>Clear Logs</button> <button onclick='runTest()'>Run test now</button> <button onclick='tetris()'>Tetris Melody</button></p>";
+  html += "<p><button onclick='clearLogs()'>Clear Logs</button> <button onclick='runTest()'>Run test now</button> <button onclick='tetris()'>Tetris Melody</button> <button onclick=\"location.href='/setup'\">WiFi Setup</button></p>";
   html += "<h2>History</h2>";
   html += getHistoryHTML();
   html += "</body></html>";
@@ -705,8 +871,9 @@ void setup() {
   loadHistory();
   loadFromFile();
   
+  loadWifiConfig();
   beepStartup();
-  WiFi.begin(ssid, password);
+  WiFi.begin(wifiSsid, wifiPass);
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 50) {
     delay(500); 
@@ -719,6 +886,7 @@ void setup() {
     Serial.println("\nWiFi Connected!");
     lcd.clear(); lcd.print("WiFi: OK");
     beepWifiSuccess();
+    WiFi.setAutoReconnect(true);
     delay(1000);
     lcd.clear();
     
@@ -730,6 +898,9 @@ void setup() {
     server.on("/now", handleNow);
     server.on("/testprogress", handleTestProgress);
     server.on("/tetris", handleTetris);
+    server.on("/setup", handleSetupPage);
+    server.on("/scan", HTTP_GET, handleScan);
+    server.on("/savewifi", HTTP_POST, handleSaveWifi);
     server.onNotFound(handleNotFound);
     server.begin();
     Serial.println("Web Server Started");
@@ -740,8 +911,7 @@ void setup() {
   } else {
     Serial.println("WiFi Connect Failed!");
     lcd.clear(); lcd.print("No WiFi!");
-    beepWifiFail();
-    while(true) delay(100);
+    startAPMode();
   }
 }
 
@@ -751,6 +921,12 @@ void setup() {
 // Главный цикл: обработка веб-запросов, синхронизация времени,
 // периодическая проверка сети (каждые 3 минуты), обновление часов/дисплея
 void loop() {
+  if (apMode) {
+    dnsServer.processNextRequest();
+    server.handleClient();
+    return;
+  }
+  
   server.handleClient();
   syncTimeIfNeeded();
   
@@ -780,5 +956,19 @@ void loop() {
       networkProblemBeepTime = currentMillis;
       playStatusMelody();
     }
+  }
+
+  // Проверка WiFi-соединения — если пропало на 30 секунд, переходим в AP-режим
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiReconnectStart == 0) {
+      wifiReconnectStart = currentMillis;
+      Serial.println("WiFi lost, waiting to reconnect...");
+    } else if (currentMillis - wifiReconnectStart > 30000) {
+      Serial.println("WiFi reconnect timeout, entering AP mode...");
+      startAPMode();
+      return;
+    }
+  } else {
+    wifiReconnectStart = 0;
   }
 }
