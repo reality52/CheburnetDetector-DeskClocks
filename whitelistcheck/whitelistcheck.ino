@@ -18,13 +18,10 @@ char wifiSsid[33] = "your-ssid";
 char wifiPass[65] = "your-pass";
 const char* AP_SSID = "NetworkMonitor";
 const char* AP_PASS = "12345678";
-const char* ntpServer = "0.ru.pool.ntp.org";
-const long  gmtOffset_sec = 10800; // GMT OFFSET 
-const int   daylightOffset_sec = 0; 
+
 
 // --- НАСТРОЙКИ ТИШИНЫ (ночью динамик не пищит) ---
-const int SILENT_START_HOUR = 21;   // 21:00
-const int SILENT_END_HOUR = 8;      // 08:00
+
 
 // --- СПИСКИ ДЛЯ ПРОВЕРКИ ---
 // Структура элемента для проверки: имя хоста, флаг IP-адреса, результаты ping и HTTP, время ping
@@ -36,28 +33,34 @@ struct CheckItem {
   unsigned long pingTime;
 };
 
-CheckItem worldList[] = {
-  {"google.com", false, 0, 0, 0},
-  {"cloudflare.com", false, 0, 0, 0},
-  {"store.steampowered.com", false, 0, 0, 0},
-  {"baidu.com", false, 0, 0, 0},
-  {"reality.run.place", false, 0, 0, 0}
-};
+// --- КОНФИГУРИРУЕМЫЕ СПИСКИ ХОСТОВ ---
+const int MAX_HOSTS = 10;
 
-CheckItem whitelistList[] = {
-  {"vk.com", false, 0, 0, 0},
-  {"ya.ru", false, 0, 0, 0},
-  {"max.ru", false, 0, 0, 0}
-};
+String cfgLocalHosts[MAX_HOSTS] = {"192.168.0.1"};
+int cfgLocalCount = 1;
 
-CheckItem localList[] = {
-  {"192.168.0.1", true, 0, 0, 0}
-};
+String cfgWhitelistHosts[MAX_HOSTS] = {"vk.com", "ya.ru", "max.ru"};
+int cfgWhitelistCount = 3;
+
+String cfgWorldHosts[MAX_HOSTS] = {"google.com", "cloudflare.com", "store.steampowered.com", "baidu.com", "reality.run.place"};
+int cfgWorldCount = 5;
+
+// --- ДИНАМИЧЕСКИЕ МАССИВЫ ПРОВЕРКИ (rebuilt from cfg arrays before each test) ---
+CheckItem localList[MAX_HOSTS];
+CheckItem whitelistList[MAX_HOSTS];
+CheckItem worldList[MAX_HOSTS];
 
 const char* daysOfWeek[] = {"Su", "Mn", "Tu", "We", "Th", "Fr", "Sa"};
 
+// --- КОНФИГУРИРУЕМЫЕ ПАРАМЕТРЫ ---
+const char* cfgNtpServer = "0.ru.pool.ntp.org";
+int cfgGmtOffset = 10800;
+int cfgDstOffset = 0;
+int cfgSilentStart = 21;
+int cfgSilentEnd = 8;
+int checkInterval = 180;
+
 // --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-// Счётчик результатов тестов, флаги статусов, таймеры, состояние дисплея, мелодии, история, синхронизация NTP
 int resultCount = 0;
 bool whitelistOk = false;
 bool worldOk = false;
@@ -281,6 +284,342 @@ void saveWifiConfig(const char* newSsid, const char* newPass) {
   LittleFS.end();
 }
 
+// -------------------------------------------------------------------
+// КОНФИГУРАЦИЯ УСТРОЙСТВА (LittleFS /config.txt)
+// -------------------------------------------------------------------
+// Загружает все настройки из /config.txt
+void loadConfig() {
+  if (!LittleFS.begin()) return;
+  File file = LittleFS.open("/config.txt", "r");
+  if (!file) { LittleFS.end(); return; }
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("ntp_server=")) { free((void*)cfgNtpServer); cfgNtpServer = strdup(line.substring(11).c_str()); }
+    else if (line.startsWith("gmt_offset=")) cfgGmtOffset = line.substring(11).toInt();
+    else if (line.startsWith("dst_offset=")) cfgDstOffset = line.substring(11).toInt();
+    else if (line.startsWith("silent_start=")) cfgSilentStart = line.substring(13).toInt();
+    else if (line.startsWith("silent_end=")) cfgSilentEnd = line.substring(11).toInt();
+    else if (line.startsWith("check_interval=")) checkInterval = line.substring(15).toInt();
+    else if (line.startsWith("local_hosts=")) {
+      cfgLocalCount = 0;
+      String val = line.substring(12);
+      int start = 0;
+      while (start < (int)val.length() && cfgLocalCount < MAX_HOSTS) {
+        int comma = val.indexOf(',', start);
+        if (comma == -1) comma = val.length();
+        String h = val.substring(start, comma); h.trim();
+        if (h.length() > 0) { cfgLocalHosts[cfgLocalCount] = h; cfgLocalCount++; }
+        start = comma + 1;
+      }
+    }
+    else if (line.startsWith("whitelist_hosts=")) {
+      cfgWhitelistCount = 0;
+      String val = line.substring(16);
+      int start = 0;
+      while (start < (int)val.length() && cfgWhitelistCount < MAX_HOSTS) {
+        int comma = val.indexOf(',', start);
+        if (comma == -1) comma = val.length();
+        String h = val.substring(start, comma); h.trim();
+        if (h.length() > 0) { cfgWhitelistHosts[cfgWhitelistCount] = h; cfgWhitelistCount++; }
+        start = comma + 1;
+      }
+    }
+    else if (line.startsWith("world_hosts=")) {
+      cfgWorldCount = 0;
+      String val = line.substring(12);
+      int start = 0;
+      while (start < (int)val.length() && cfgWorldCount < MAX_HOSTS) {
+        int comma = val.indexOf(',', start);
+        if (comma == -1) comma = val.length();
+        String h = val.substring(start, comma); h.trim();
+        if (h.length() > 0) { cfgWorldHosts[cfgWorldCount] = h; cfgWorldCount++; }
+        start = comma + 1;
+      }
+    }
+  }
+  file.close();
+  LittleFS.end();
+  Serial.println("Config loaded from /config.txt");
+}
+
+// Сохраняет все настройки в /config.txt
+void saveConfig() {
+  if (!LittleFS.begin()) return;
+  File file = LittleFS.open("/config.txt", "w");
+  if (!file) { LittleFS.end(); return; }
+  file.print("ntp_server="); file.println(cfgNtpServer);
+  file.print("gmt_offset="); file.println(cfgGmtOffset);
+  file.print("dst_offset="); file.println(cfgDstOffset);
+  file.print("silent_start="); file.println(cfgSilentStart);
+  file.print("silent_end="); file.println(cfgSilentEnd);
+  file.print("check_interval="); file.println(checkInterval);
+  file.print("local_hosts=");
+  for (int i = 0; i < cfgLocalCount; i++) { if (i > 0) file.print(","); file.print(cfgLocalHosts[i]); }
+  file.println();
+  file.print("whitelist_hosts=");
+  for (int i = 0; i < cfgWhitelistCount; i++) { if (i > 0) file.print(","); file.print(cfgWhitelistHosts[i]); }
+  file.println();
+  file.print("world_hosts=");
+  for (int i = 0; i < cfgWorldCount; i++) { if (i > 0) file.print(","); file.print(cfgWorldHosts[i]); }
+  file.println();
+  file.close();
+  LittleFS.end();
+  Serial.println("Config saved to /config.txt");
+}
+
+// Вспомогательная: извлечь строковое значение JSON по ключу
+String jsonGetString(const String& body, const String& key) {
+  int p = body.indexOf("\"" + key + "\":\"");
+  if (p == -1) return "";
+  p += key.length() + 4;
+  int e = body.indexOf("\"", p);
+  return body.substring(p, e);
+}
+
+// Вспомогательная: извлечь числовое значение JSON по ключу (или defaultVal)
+int jsonGetInt(const String& body, const String& key, int defaultVal) {
+  int p = body.indexOf("\"" + key + "\":");
+  if (p == -1) return defaultVal;
+  p += key.length() + 3;
+  return body.substring(p).toInt();
+}
+
+// Страница настроек (/settings)
+void handleSettingsPage() {
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1">";
+  html += "<title>Settings</title><style>";
+  html += "*{box-sizing:border-box;margin:0;padding:0}";
+  html += "body{font-family:'Segoe UI',Arial,sans-serif;background:#1a1a2e;color:#eee;padding:20px}";
+  html += ".wrap{max-width:700px;margin:0 auto}";
+  html += "h1{text-align:center;color:#e94560;margin-bottom:20px}";
+  html += ".card{background:#16213e;border-radius:12px;padding:24px;margin-bottom:16px}";
+  html += "h2{color:#e94560;font-size:1.1em;margin-bottom:12px;border-bottom:1px solid #253554;padding-bottom:8px}";
+  html += ".row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap}";
+  html += ".field{flex:1;min-width:140px}";
+  html += "label{display:block;font-size:.8em;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}";
+  html += "input[type=text],input[type=number],select{width:100%;padding:8px;border:1px solid #333;border-radius:6px;background:#0f3460;color:#eee;font-size:.95em}";
+  html += "input:focus,select:focus{outline:none;border-color:#e94560}";
+  html += ".host-list{margin-bottom:8px}";
+  html += ".host-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;padding:6px 10px;background:#0f3460;border-radius:8px}";
+  html += ".host-row input{flex:1;padding:6px;border:1px solid #333;border-radius:6px;background:#16213e;color:#eee}";
+  html += ".host-row button{padding:4px 10px;border:none;border-radius:6px;cursor:pointer;font-size:.85em}";
+  html += ".del-btn{background:#e94560;color:#fff}.mv-btn{background:#0f3460;color:#ccc}";
+  html += ".add-row{display:flex;gap:8px;margin-top:6px}";
+  html += ".add-row input{flex:1;padding:6px;border:1px solid #333;border-radius:6px;background:#16213e;color:#eee}";
+  html += ".add-btn{padding:6px 14px;background:#0f3460;color:#4fc3f7;border:1px solid #4fc3f7;border-radius:6px;cursor:pointer}";
+  html += ".counter{text-align:right;font-size:.8em;color:#555;margin-bottom:6px}";
+  html += ".btn-bar{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}";
+  html += ".btn{padding:12px 24px;border:none;border-radius:8px;font-size:1em;font-weight:600;cursor:pointer;transition:background .2s}";
+  html += ".btn-primary{background:#e94560;color:#fff;flex:1}.btn-primary:hover{background:#c73553}";
+  html += ".btn-secondary{background:#0f3460;color:#ccc;border:1px solid #333}.btn-secondary:hover{background:#1a4a8a}";
+  html += ".btn-danger{background:#7f1d1d;color:#fca5a5;border:1px solid #991b1b}.btn-danger:hover{background:#991b1b}";
+  html += ".nav{text-align:center;margin-bottom:16px}";
+  html += ".nav a{color:#4fc3f7;text-decoration:none;margin:0 10px}.nav a:hover{text-decoration:underline}";
+  html += ".msg{text-align:center;padding:10px;border-radius:8px;margin-bottom:12px;display:none}";
+  html += ".msg-ok{background:#064e3b;color:#6ee7b7;display:block}.msg-err{background:#7f1d1d;color:#fca5a5;display:block}";
+  html += "</style></head><body><div class='wrap'>";
+  html += "<h1>&#x2699; Settings</h1>";
+  html += "<div class='nav'><a href='/'>Dashboard</a><a href='/settings'>Settings</a><a href='/setup'>WiFi Setup</a></div>";
+  html += "<div id='msg' class='msg'></div>";
+  html += "<div class='card'><h2>&#x1f4f6; WiFi Configuration</h2>";
+  html += "<div class='row'><div class='field'><label>WiFi Network</label><select id='wifi_scan' onchange=\"document.getElementById('wifi_ssid').value=this.value\"><option value=''>-- Scan to list networks --</option></select></div></div>";
+  html += "<div class='row'><div class='field"><button class='btn btn-secondary' style='width:auto;padding:8px 16px;margin:0' onclick='scanWifi()'>&#x1f50d; Scan Networks</button></div><div id='scan-spinner' style='display:none;color:#e94560;padding:8px'>Scanning...</div></div>";
+  html += "<div class='row'><div class='field'><label>SSID</label><input type='text' id='wifi_ssid' placeholder='Network name'></div>";
+  html += "<div class='field'><label>Password</label><input type='password' id='wifi_pass' placeholder='WiFi password'></div></div>";
+  html += "<div style='margin-top:12px'><button class='btn btn-danger' onclick='saveWifi()' style='width:auto;padding:10px 20px'>&#x1f4be; Save WiFi &amp; Restart</button>";
+  html += "<span style='color:#888;font-size:.8em;margin-left:12px'>Changes require device restart</span></div></div>";
+  html += "<div class='card'><h2>NTP Time Sync</h2>";
+  html += "<div class='row'><div class='field'><label>NTP Server</label><input type='text' id='ntp_server'></div></div>";
+  html += "<div class='row'><div class='field'><label>GMT Offset (sec)</label><input type='number' id='gmt_offset'></div>";
+  html += "<div class='field'><label>DST Offset (sec)</label><input type='number' id='dst_offset'></div></div></div>";
+  html += "<div class='card'><h2>Silent Hours</h2>";
+  html += "<div class='row"><div class='field'><label>Start (0-23)</label><input type='number' id='silent_start' min='0' max='23'></div>";
+  html += "<div class='field'><label>End (0-23)</label><input type='number' id='silent_end' min='0' max='23'></div></div></div>";
+  html += "<div class='card'><h2>Network Check</h2>";
+  html += "<div class='row"><div class='field"><label>Interval (sec, min 10)</label><input type='number' id='check_interval' min='10'></div></div></div>";
+  html += "<div class='card' id='hosts-section'></div>";
+  html += "<div class='btn-bar">";
+  html += "<button class='btn btn-primary' onclick='saveConfig()'>&#x1f4be; Save Settings</button>";
+  html += "<button class='btn btn-secondary' onclick="location.href='/'">&#x2302; Dashboard</button>";
+  html += "<button class='btn btn-danger' onclick='restart()'>&#x1f504; Restart</button>";
+  html += "</div></div><script>";
+  html += "var cfg;";
+  html += "async function load(){try{var r=await fetch('/api/config');cfg=await r.json();";
+  html += "document.getElementById('ntp_server').value=cfg.ntp_server||'';";
+  html += "document.getElementById('gmt_offset').value=cfg.gmt_offset||0;";
+  html += "document.getElementById('dst_offset').value=cfg.dst_offset||0;";
+  html += "document.getElementById('silent_start').value=cfg.silent_start||0;";
+  html += "document.getElementById('silent_end').value=cfg.silent_end||0;";
+  html += "document.getElementById('check_interval').value=cfg.check_interval||180;";
+  html += "document.getElementById('wifi_ssid').value=cfg.wifi_ssid||'';";
+  html += "renderHosts(cfg);}catch(e){msg('Load failed: '+e,true);}";
+  html += "}";
+  html += "function renderHosts(c){var s=document.getElementById('hosts-section');";
+  html += "s.innerHTML='<h2>Host Lists</h2>'+buildHosts('Local',c.local_hosts||[],'local')+buildHosts('Whitelist',c.whitelist_hosts||[],'whitelist')+buildHosts('World',c.world_hosts||[],'world');}";
+  html += "function buildHosts(title,arr,key){";
+  html += "var h='<h3 style=\"color:#4fc3f7;margin:12px 0 8px;font-size:.95em\">'+title+'</h3><div class=\"counter\" id=\"cnt-'+key+'\">'+arr.length+'/10 hosts</div><div class=\"host-list\" id=\"hl-'+key+'\">';";
+  html += "arr.forEach(function(name,i){h+='<div class=\"host-row\"><input type=\"text\" value=\"'+name+'\" id=\"h-'+key+'-'+i+'\"><button class=\"mv-btn\" onclick=\"moveHost(\''+key+'\','+i+',-1)\">\u25b2</button><button class=\"mv-btn\" onclick=\"moveHost(\''+key+'\','+i+',1)\">\u25bc</button><button class=\"del-btn\" onclick=\"delHost(\''+key+'\','+i+')\">\u2715</button></div>';});";
+  html += "h+='</div><div class=\"add-row\"><input type=\"text\" id=\"new-'+key+'\" placeholder=\"Add host...\" onkeydown=\"if(event.key===\"Enter\")addHost(\''+key+'\')\"><button class=\"add-btn\" onclick=\"addHost(\''+key+'\')\">+ Add</button></div>';";
+  html += "return h;}";
+  html += "function getHosts(key){var a=[];var el=document.getElementById('hl-'+key);var inputs=el.querySelectorAll('input');for(var i=0;i<inputs.length;i++){var v=inputs[i].value.trim();if(v)a.push(v);}return a;}";
+  html += "function addHost(key){var hosts=getHosts(key);if(hosts.length>=10){alert('Max 10 hosts');return;}";
+  html += "var inp=document.getElementById('new-'+key);var v=inp.value.trim();if(!v)return;";
+  html += "if(cfg)cfg[key+'_hosts']=hosts.concat([v]);inp.value='';renderHosts(cfg);}";
+  html += "function delHost(key,idx){var hosts=getHosts(key);hosts.splice(idx,1);if(cfg)cfg[key+'_hosts']=hosts;renderHosts(cfg);}";
+  html += "function moveHost(key,idx,dir){var hosts=getHosts(key);var ni=idx+dir;if(ni<0||ni>=hosts.length)return;";
+  html += "var t=hosts[idx];hosts[idx]=hosts[ni];hosts[ni]=t;if(cfg)cfg[key+'_hosts']=hosts;renderHosts(cfg);}";
+  html += "function msg(text,err){var el=document.getElementById('msg');el.textContent=text;el.className='msg '+(err?'msg-err':'msg-ok');setTimeout(function(){el.style.display='none';},3000);el.style.display='block';}";
+  html += "async function saveConfig(){";
+  html += "var hosts={local:getHosts('local'),whitelist:getHosts('whitelist'),world:getHosts('world')};";
+  html += "var body={";
+  html += "ntp_server:document.getElementById('ntp_server').value,";
+  html += "gmt_offset:parseInt(document.getElementById('gmt_offset').value)||0,";
+  html += "dst_offset:parseInt(document.getElementById('dst_offset').value)||0,";
+  html += "silent_start:parseInt(document.getElementById('silent_start').value)||0,";
+  html += "silent_end:parseInt(document.getElementById('silent_end').value)||0,";
+  html += "check_interval:Math.max(10,parseInt(document.getElementById('check_interval').value)||180),";
+  html += "local_hosts:hosts.local,whitelist_hosts:hosts.whitelist,world_hosts:hosts.world";
+  html += "};";
+  html += "try{var r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});";
+  html += "var d=await r.json();if(d.ok)msg('Settings saved!');else msg('Error: '+(d.error||'unknown'),true);}";
+  html += "catch(e){msg('Save failed: '+e,true);}}";
+  html += "async function scanWifi(){";
+  html += "document.getElementById('scan-spinner').style.display='inline-block';";
+  html += "var sel=document.getElementById('wifi_scan');sel.innerHTML='<option>Scanning...</option>';";
+  html += "try{var r=await fetch('/scan');var n=await r.json();";
+  html += "sel.innerHTML='<option value=\"\">-- Select network --</option>';";
+  html += "n.forEach(function(x){var o=document.createElement('option');o.value=x.ssid;";
+  html += "o.textContent=x.ssid+' ('+x.rssi+' dBm)'+(x.enc?' \u{1f512}':'');sel.appendChild(o);});}";
+  html += "catch(e){sel.innerHTML='<option>Scan failed</option>';}";
+  html += "document.getElementById('scan-spinner').style.display='none';}";
+  html += "async function saveWifi(){";
+  html += "var s=document.getElementById('wifi_ssid').value.trim();";
+  html += "var p=document.getElementById('wifi_pass').value;";
+  html += "if(!s){alert('Enter SSID!');return;}";
+  html += "if(!confirm('Save WiFi and restart? Device will reboot.'))return;";
+  html += "try{await fetch('/savewifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:s,pass:p})});";
+  html += "msg('WiFi saved! Restarting...');}catch(e){msg('WiFi save sent, restarting...');}}";
+  html += "async function restart(){if(!confirm('Restart device?'))return;";
+  html += "try{await fetch('/restart');msg('Restarting...');}catch(e){msg('Restart sent');}}";
+  html += "load();</script></body></html>";
+  server.send(200, "text/html", html);
+}
+
+// GET /api/config — возвращает текущую конфигурацию в JSON
+void handleApiConfigGet() {
+  String json = "{";
+  json += "\"wifi_ssid\":\"" + String(wifiSsid) + "\",";
+  json += "\"ntp_server\":\"" + String(cfgNtpServer) + "\",";
+  json += "\"gmt_offset\":" + String(cfgGmtOffset) + ",";
+  json += "\"dst_offset\":" + String(cfgDstOffset) + ",";
+  json += "\"silent_start\":" + String(cfgSilentStart) + ",";
+  json += "\"silent_end\":" + String(cfgSilentEnd) + ",";
+  json += "\"check_interval\":" + String(checkInterval) + ",";
+  json += "\"local_hosts\":[";
+  for (int i = 0; i < cfgLocalCount; i++) { if (i > 0) json += ","; json += "\"" + cfgLocalHosts[i] + "\""; }
+  json += "],\"whitelist_hosts\":[";
+  for (int i = 0; i < cfgWhitelistCount; i++) { if (i > 0) json += ","; json += "\"" + cfgWhitelistHosts[i] + "\""; }
+  json += "],\"world_hosts\":[";
+  for (int i = 0; i < cfgWorldCount; i++) { if (i > 0) json += ","; json += "\"" + cfgWorldHosts[i] + "\""; }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
+// POST /api/config — сохраняет конфигурацию из JSON-тела
+void handleApiConfigPost() {
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}");
+    return;
+  }
+  String body = server.arg("plain");
+  String val;
+
+  val = jsonGetString(body, "ntp_server");
+  if (val.length() > 0) { free((void*)cfgNtpServer); cfgNtpServer = strdup(val.c_str()); }
+
+  int n = jsonGetInt(body, "gmt_offset", cfgGmtOffset);
+  cfgGmtOffset = n;
+
+  n = jsonGetInt(body, "dst_offset", cfgDstOffset);
+  cfgDstOffset = n;
+
+  n = jsonGetInt(body, "silent_start", cfgSilentStart);
+  cfgSilentStart = n;
+
+  n = jsonGetInt(body, "silent_end", cfgSilentEnd);
+  cfgSilentEnd = n;
+
+  n = jsonGetInt(body, "check_interval", checkInterval);
+  if (n >= 10) checkInterval = n;
+
+  // Парсим массивы хостов
+  int arrStart = body.indexOf("\"local_hosts\":[");
+  if (arrStart != -1) {
+    arrStart += 14;
+    int arrEnd = body.indexOf("]", arrStart);
+    String arr = body.substring(arrStart, arrEnd);
+    cfgLocalCount = 0;
+    int pos = 0;
+    while (pos < (int)arr.length() && cfgLocalCount < MAX_HOSTS) {
+      int q1 = arr.indexOf('"', pos);
+      if (q1 == -1) break;
+      int q2 = arr.indexOf('"', q1 + 1);
+      if (q2 == -1) break;
+      cfgLocalHosts[cfgLocalCount] = arr.substring(q1 + 1, q2);
+      cfgLocalCount++;
+      pos = q2 + 1;
+    }
+  }
+
+  arrStart = body.indexOf("\"whitelist_hosts\":[");
+  if (arrStart != -1) {
+    arrStart += 19;
+    int arrEnd = body.indexOf("]", arrStart);
+    String arr = body.substring(arrStart, arrEnd);
+    cfgWhitelistCount = 0;
+    int pos = 0;
+    while (pos < (int)arr.length() && cfgWhitelistCount < MAX_HOSTS) {
+      int q1 = arr.indexOf('"', pos);
+      if (q1 == -1) break;
+      int q2 = arr.indexOf('"', q1 + 1);
+      if (q2 == -1) break;
+      cfgWhitelistHosts[cfgWhitelistCount] = arr.substring(q1 + 1, q2);
+      cfgWhitelistCount++;
+      pos = q2 + 1;
+    }
+  }
+
+  arrStart = body.indexOf("\"world_hosts\":[");
+  if (arrStart != -1) {
+    arrStart += 15;
+    int arrEnd = body.indexOf("]", arrStart);
+    String arr = body.substring(arrStart, arrEnd);
+    cfgWorldCount = 0;
+    int pos = 0;
+    while (pos < (int)arr.length() && cfgWorldCount < MAX_HOSTS) {
+      int q1 = arr.indexOf('"', pos);
+      if (q1 == -1) break;
+      int q2 = arr.indexOf('"', q1 + 1);
+      if (q2 == -1) break;
+      cfgWorldHosts[cfgWorldCount] = arr.substring(q1 + 1, q2);
+      cfgWorldCount++;
+      pos = q2 + 1;
+    }
+  }
+
+  saveConfig();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// GET /restart — перезагрузка устройства
+void handleRestart() {
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"restarting\"}");
+  delay(500);
+  ESP.restart();
+}
+
 // Страница настройки WiFi (режим точки доступа)
 void handleSetupPage() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
@@ -435,7 +774,7 @@ void handleRoot() {
   }
   html += "</span></p>";
   html += "<div id='test-status' style='background:#f0f0f0;padding:10px;margin:10px 0;'>Loading...</div>";
-  html += "<p><button onclick='clearLogs()'>Clear Logs</button> <button onclick='runTest()'>Run test now</button> <button onclick='tetris()'>Tetris Melody</button> <button onclick=\"location.href='/setup'\">WiFi Setup</button></p>";
+  html += "<p><button onclick='clearLogs()'>Clear Logs</button> <button onclick='runTest()'>Run test now</button> <button onclick='tetris()'>Tetris Melody</button> <button onclick=\"location.href='/settings'\">Settings</button> <button onclick=\"location.href='/setup'\">WiFi Setup</button></p>";
   html += "<h2>History</h2>";
   html += getHistoryHTML();
   html += "</body></html>";
@@ -581,10 +920,35 @@ bool checkHttp(const char* host) {
 }
 
 // Сбрасывает флаги pinged, httpChecked и pingTime для всех списков хостов
+// Восстанавливает массивы CheckItem из конфигурируемых строковых массивов
+void rebuildCheckItems() {
+  for (int i = 0; i < cfgLocalCount; i++) {
+    localList[i].name = cfgLocalHosts[i].c_str();
+    localList[i].isIp = true;
+    localList[i].pinged = false;
+    localList[i].httpChecked = false;
+    localList[i].pingTime = 0;
+  }
+  for (int i = 0; i < cfgWhitelistCount; i++) {
+    whitelistList[i].name = cfgWhitelistHosts[i].c_str();
+    whitelistList[i].isIp = false;
+    whitelistList[i].pinged = false;
+    whitelistList[i].httpChecked = false;
+    whitelistList[i].pingTime = 0;
+  }
+  for (int i = 0; i < cfgWorldCount; i++) {
+    worldList[i].name = cfgWorldHosts[i].c_str();
+    worldList[i].isIp = false;
+    worldList[i].pinged = false;
+    worldList[i].httpChecked = false;
+    worldList[i].pingTime = 0;
+  }
+}
+
 void resetFlags() {
-  for (int i = 0; i < 1; i++) { localList[i].pinged = false; localList[i].httpChecked = false; localList[i].pingTime = 0; }
-  for (int i = 0; i < 3; i++) { whitelistList[i].pinged = false; whitelistList[i].httpChecked = false; whitelistList[i].pingTime = 0; }
-  for (int i = 0; i < 5; i++) { worldList[i].pinged = false; worldList[i].httpChecked = false; worldList[i].pingTime = 0; }
+  for (int i = 0; i < cfgLocalCount; i++) { localList[i].pinged = false; localList[i].httpChecked = false; localList[i].pingTime = 0; }
+  for (int i = 0; i < cfgWhitelistCount; i++) { whitelistList[i].pinged = false; whitelistList[i].httpChecked = false; whitelistList[i].pingTime = 0; }
+  for (int i = 0; i < cfgWorldCount; i++) { worldList[i].pinged = false; worldList[i].httpChecked = false; worldList[i].pingTime = 0; }
 }
 
 // Проверяет список хостов: для каждого выполняет ping и (если не IP) HTTP-проверку
@@ -622,11 +986,10 @@ void checkHosts(CheckItem* list, int count) {
 bool isSilentHour() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return false;
-  int hour = timeinfo.tm_hour;
-  if (SILENT_START_HOUR < SILENT_END_HOUR) {
-    return (hour >= SILENT_START_HOUR && hour < SILENT_END_HOUR);
+  int hour = timeinfo.tm_hour;    if (cfgSilentStart < cfgSilentEnd) {
+    return (hour >= cfgSilentStart && hour < cfgSilentEnd);
   } else {
-    return (hour >= SILENT_START_HOUR || hour < SILENT_END_HOUR);
+    return (hour >= cfgSilentStart || hour < cfgSilentEnd);
   }
 }
 
@@ -634,11 +997,11 @@ bool isSilentHour() {
 // Определяет статусы: 0=OK, 1=Network Problem, 2=Dead Internet, 3=Whitelisted, 4=Anomaly
 // При изменении статуса включает мелодию, мигание подсветки, обновляет дисплей
 void evaluateStatus() {
-  bool localOk = localList[0].pinged;
+  bool localOk = cfgLocalCount > 0 && localList[0].pinged;
   whitelistOk = true;
-  for (int i = 0; i < 3; i++) if (!whitelistList[i].pinged && !whitelistList[i].httpChecked) { whitelistOk = false; break; }
+  for (int i = 0; i < cfgWhitelistCount; i++) if (!whitelistList[i].pinged && !whitelistList[i].httpChecked) { whitelistOk = false; break; }
   worldOk = true;
-  for (int i = 0; i < 5; i++) if (!worldList[i].pinged && !worldList[i].httpChecked) { worldOk = false; break; }
+  for (int i = 0; i < cfgWorldCount; i++) if (!worldList[i].pinged && !worldList[i].httpChecked) { worldOk = false; break; }
   
   unsigned long newStatus;
   if (!localOk) newStatus = 1;
@@ -693,11 +1056,11 @@ void updateClockDisplay(struct tm* timeinfo) {
 // После теста обновляет дисплей в зависимости от результата
 void runTestWithAnimation() {
   testingInProgress = true;
-  showTestAnimation();   // анимация поверх часов
-  resetFlags();
-  checkHosts(localList, 1);
-  checkHosts(whitelistList, 3);
-  checkHosts(worldList, 5);
+  showTestAnimation();
+  rebuildCheckItems();
+  checkHosts(localList, cfgLocalCount);
+  checkHosts(whitelistList, cfgWhitelistCount);
+  checkHosts(worldList, cfgWorldCount);
   evaluateStatus();
   testingInProgress = false;
   // После теста обновляем экран
@@ -837,7 +1200,7 @@ void syncTimeIfNeeded() {
   unsigned long nowMs = millis();
   if (lastNtpSync == 0 || (nowMs - lastNtpSync > NTP_SYNC_INTERVAL)) {
     Serial.println("Syncing time with NTP...");
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    configTime(cfgGmtOffset, cfgDstOffset, cfgNtpServer);
     lastNtpSync = nowMs;
     struct tm timeinfo;
     int attempts = 0;
@@ -901,13 +1264,18 @@ void setup() {
     server.on("/setup", handleSetupPage);
     server.on("/scan", HTTP_GET, handleScan);
     server.on("/savewifi", HTTP_POST, handleSaveWifi);
+    server.on("/settings", handleSettingsPage);
+    server.on("/api/config", HTTP_GET, handleApiConfigGet);
+    server.on("/api/config", HTTP_POST, handleApiConfigPost);
+    server.on("/restart", handleRestart);
     server.onNotFound(handleNotFound);
     server.begin();
     Serial.println("Web Server Started");
     
+    loadConfig();
     syncTimeIfNeeded();
     
-    lastCheckTime = millis() - 180000 + 15000;
+    lastCheckTime = millis() - (unsigned long)checkInterval * 1000 + 15000;
   } else {
     Serial.println("WiFi Connect Failed!");
     lcd.clear(); lcd.print("No WiFi!");
@@ -931,7 +1299,7 @@ void loop() {
   syncTimeIfNeeded();
   
   unsigned long currentMillis = millis();
-  if (currentMillis - lastCheckTime > 180000) {
+  if (currentMillis - lastCheckTime > (unsigned long)checkInterval * 1000) {
     lastCheckTime = currentMillis;
     runTestWithAnimation();
   }
