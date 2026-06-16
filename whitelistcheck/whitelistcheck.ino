@@ -388,7 +388,7 @@ int jsonGetInt(const String& body, const String& key, int defaultVal) {
 // Страница настроек (/settings)
 void handleSettingsPage() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
-  html += "<meta name='viewport' content='width=device-width,initial-scale=1">";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>Settings</title><style>";
   html += "*{box-sizing:border-box;margin:0;padding:0}";
   html += "body{font-family:'Segoe UI',Arial,sans-serif;background:#1a1a2e;color:#eee;padding:20px}";
@@ -425,7 +425,7 @@ void handleSettingsPage() {
   html += "<div id='msg' class='msg'></div>";
   html += "<div class='card'><h2>&#x1f4f6; WiFi Configuration</h2>";
   html += "<div class='row'><div class='field'><label>WiFi Network</label><select id='wifi_scan' onchange=\"document.getElementById('wifi_ssid').value=this.value\"><option value=''>-- Scan to list networks --</option></select></div></div>";
-  html += "<div class='row'><div class='field"><button class='btn btn-secondary' style='width:auto;padding:8px 16px;margin:0' onclick='scanWifi()'>&#x1f50d; Scan Networks</button></div><div id='scan-spinner' style='display:none;color:#e94560;padding:8px'>Scanning...</div></div>";
+  html += "<div class='row'><div class='field'><button class='btn btn-secondary' style='width:auto;padding:8px 16px;margin:0' onclick='scanWifi()'>&#x1f50d; Scan Networks</button></div><div id='scan-spinner' style='display:none;color:#e94560;padding:8px'>Scanning...</div></div>";
   html += "<div class='row'><div class='field'><label>SSID</label><input type='text' id='wifi_ssid' placeholder='Network name'></div>";
   html += "<div class='field'><label>Password</label><input type='password' id='wifi_pass' placeholder='WiFi password'></div></div>";
   html += "<div style='margin-top:12px'><button class='btn btn-danger' onclick='saveWifi()' style='width:auto;padding:10px 20px'>&#x1f4be; Save WiFi &amp; Restart</button>";
@@ -435,14 +435,14 @@ void handleSettingsPage() {
   html += "<div class='row'><div class='field'><label>GMT Offset (sec)</label><input type='number' id='gmt_offset'></div>";
   html += "<div class='field'><label>DST Offset (sec)</label><input type='number' id='dst_offset'></div></div></div>";
   html += "<div class='card'><h2>Silent Hours</h2>";
-  html += "<div class='row"><div class='field'><label>Start (0-23)</label><input type='number' id='silent_start' min='0' max='23'></div>";
+  html += "<div class='row'><div class='field'><label>Start (0-23)</label><input type='number' id='silent_start' min='0' max='23'></div>";
   html += "<div class='field'><label>End (0-23)</label><input type='number' id='silent_end' min='0' max='23'></div></div></div>";
   html += "<div class='card'><h2>Network Check</h2>";
-  html += "<div class='row"><div class='field"><label>Interval (sec, min 10)</label><input type='number' id='check_interval' min='10'></div></div></div>";
+  html += "<div class='row'><div class='field'><label>Interval (sec, min 10)</label><input type='number' id='check_interval' min='10'></div></div></div>";
   html += "<div class='card' id='hosts-section'></div>";
-  html += "<div class='btn-bar">";
+  html += "<div class='btn-bar'>";
   html += "<button class='btn btn-primary' onclick='saveConfig()'>&#x1f4be; Save Settings</button>";
-  html += "<button class='btn btn-secondary' onclick="location.href='/'">&#x2302; Dashboard</button>";
+  html += "<button class='btn btn-secondary' onclick=\"location.href='/'\">&#x2302; Dashboard</button>";
   html += "<button class='btn btn-danger' onclick='restart()'>&#x1f504; Restart</button>";
   html += "</div></div><script>";
   html += "var cfg;";
@@ -491,7 +491,7 @@ void handleSettingsPage() {
   html += "try{var r=await fetch('/scan');var n=await r.json();";
   html += "sel.innerHTML='<option value=\"\">-- Select network --</option>';";
   html += "n.forEach(function(x){var o=document.createElement('option');o.value=x.ssid;";
-  html += "o.textContent=x.ssid+' ('+x.rssi+' dBm)'+(x.enc?' \u{1f512}':'');sel.appendChild(o);});}";
+  html += "o.textContent=x.ssid+' ('+x.rssi+' dBm)'+(x.enc?' \xf0\x9f\x94\x92':'');sel.appendChild(o);});}";
   html += "catch(e){sel.innerHTML='<option>Scan failed</option>';}";
   html += "document.getElementById('scan-spinner').style.display='none';}";
   html += "async function saveWifi(){";
